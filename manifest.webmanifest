@@ -1,0 +1,31 @@
+{
+  "name": "九九冒險團",
+  "short_name": "九九冒險團",
+  "description": "每天 5 分鐘，把乘法表變成你的地圖",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#D6ECF7",
+  "theme_color": "#FFC21A",
+  "lang": "zh-Hant",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
