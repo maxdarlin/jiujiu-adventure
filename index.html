@@ -204,7 +204,6 @@ const $=s=>document.querySelector(s);
 const $app=$('#app');
 const DAY=864e5;
 const KEY='jj-adventure-v1';
-const INTERVALS=[0,1,2,4,7,14];
 const BOSSES=['6x7','6x8','6x9','7x7','7x8','7x9','8x8','8x9'];
 const RANK={1:0,2:1,5:1,9:2,3:3,4:3,6:4,7:5,8:5};
 const pad2=n=>String(n).padStart(2,'0');
@@ -213,7 +212,7 @@ const dayNum=(d=new Date())=>Math.floor(Date.UTC(d.getFullYear(),d.getMonth(),d.
 const parse=k=>{const p=k.split('x');return{a:+p[0],b:+p[1]}};
 const keyOf=(a,b)=>a<=b?a+'x'+b:b+'x'+a;
 const fmtSec=ms=>(ms/1000).toFixed(1);
-const isM=f=>f.box>=3;
+const isM=f=>!!f.pre||(f.n>0&&f.st>=S.set.need);
 const isSeen=f=>f.n>0||!!f.pre;
 const STAR='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z"/></svg>';
 const CROWN='<svg class="crown" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 19 2 7l5.5 4.5L12 4l4.5 7.5L22 7l-1 12z" stroke-linejoin="round"/></svg>';
@@ -225,18 +224,24 @@ function freshState(){
   const facts={};
   for(let a=1;a<=9;a++)for(let b=a;b<=9;b++){
     facts[a+'x'+b]=a===1
-      ?{box:5,due:1e9,n:0,ok:0,fast:0,bad:0,avg:0,best:0,pre:1,md:''}
-      :{box:0,due:0,n:0,ok:0,fast:0,bad:0,avg:0,best:0,pre:0,md:''};
+      ?{st:0,sd:0,last:0,due:1e9,n:0,ok:0,fast:0,bad:0,avg:0,best:0,pre:1,md:''}
+      :{st:0,sd:0,last:0,due:0,n:0,ok:0,fast:0,bad:0,avg:0,best:0,pre:0,md:''};
   }
   return {v:1,facts,stamps:[],pips:0,tickets:[],log:[],pin:'',placed:0,
     bonus:{d:'',n:0,got:0},
-    set:{fast:3,per:12,pips:3,mins:30,bar:1,snd:1,acc:80}};
+    set:{fast:3,per:12,pips:3,mins:30,bar:1,snd:1,acc:80,need:3}};
 }
 function migrate(s){
   const f=freshState();
   if(!s||s.v!==1)return f;
   Object.assign(f.set,s.set||{});
-  for(const k in f.facts)if(s.facts&&s.facts[k])Object.assign(f.facts[k],s.facts[k]);
+  for(const k in f.facts){
+    const o=s.facts&&s.facts[k],g=f.facts[k];
+    if(o)Object.assign(g,o);
+    /* 舊版用 box 判斷熟不熟：舊的「熟了」只算夠快 1 次，重新累積 */
+    if(o&&o.st===undefined&&!g.pre){g.st=(o.n>0&&o.box>=3&&o.fast>0)?1:0;g.sd=0;g.last=0;g.md='';}
+    delete g.box;
+  }
   f.stamps=Array.isArray(s.stamps)?s.stamps:[];
   f.pips=+s.pips||0;
   f.tickets=Array.isArray(s.tickets)?s.tickets.map(Number).filter(Boolean):[];
@@ -278,10 +283,10 @@ function orderByDiff(keys){
   return keys.map(k=>{const p=parse(k);return[RANK[p.a]+RANK[p.b]+(p.a===p.b?-.5:0)+Math.random()*.9,k];})
     .sort((x,y)=>x[0]-y[0]).map(x=>x[1]);
 }
-function weighted(keys,n){
-  const pool=keys.slice(),out=[];
+function weightedAge(keys,n){
+  const today=dayNum(),pool=keys.slice(),out=[];
   while(out.length<n&&pool.length){
-    const w=pool.map(k=>1/(S.facts[k].box+1)),tot=w.reduce((x,y)=>x+y,0);
+    const w=pool.map(k=>1+Math.min(14,Math.max(0,today-(S.facts[k].last||today)))),tot=w.reduce((x,y)=>x+y,0);
     let r=Math.random()*tot,i=0;
     for(;i<w.length-1;i++){r-=w[i];if(r<=0)break;}
     out.push(pool.splice(i,1)[0]);
@@ -289,7 +294,7 @@ function weighted(keys,n){
   return out;
 }
 function buildSession(){
-  const n=S.set.per,today=dayNum();
+  const n=S.set.per;
   const real=Object.keys(S.facts).filter(k=>!S.facts[k].pre);
   let picked=[],mode='normal';
   if(!S.placed){
@@ -297,17 +302,18 @@ function buildSession(){
     picked=shuffle(real.slice()).slice(0,Math.min(15,real.length));
   }else{
     const unseen=real.filter(k=>S.facts[k].n===0);
-    const learning=real.filter(k=>S.facts[k].n>0&&S.facts[k].box<3);
-    const due=real.filter(k=>S.facts[k].n>0&&S.facts[k].due<=today)
-      .sort((x,y)=>S.facts[x].box-S.facts[y].box||S.facts[x].due-S.facts[y].due);
-    const newSlots=Math.max(0,Math.min(4,8-learning.length,unseen.length));
-    picked=due.slice(0,n-newSlots).concat(orderByDiff(unseen).slice(0,newSlots));
-    if(picked.length<n){
-      picked=picked.concat(orderByDiff(unseen.filter(k=>!picked.includes(k))).slice(0,n-picked.length));
-    }
-    if(picked.length<n){
-      picked=picked.concat(weighted(real.filter(k=>S.facts[k].n>0&&!picked.includes(k)),n-picked.length));
-    }
+    const learning=real.filter(k=>S.facts[k].n>0&&!isM(S.facts[k]));
+    const green=real.filter(k=>S.facts[k].n>0&&isM(S.facts[k]));
+    /* 變綠的題目不會消失：每輪固定留約 3 成題數隨機複習，越久沒練越容易被抽到 */
+    const R=Math.min(green.length,Math.round(n*.3));
+    const newSlots=Math.max(0,Math.min(4,n-learning.length,unseen.length));
+    const learnSlots=Math.max(0,n-R-newSlots);
+    const L=learning.map(k=>[S.facts[k].due,S.facts[k].last,Math.random(),k])
+      .sort((x,y)=>x[0]-y[0]||x[1]-y[1]||x[2]-y[2]).map(x=>x[3]);
+    picked=L.slice(0,learnSlots).concat(orderByDiff(unseen).slice(0,newSlots),weightedAge(green,R));
+    if(picked.length<n)picked=picked.concat(orderByDiff(unseen.filter(k=>!picked.includes(k))).slice(0,n-picked.length));
+    if(picked.length<n)picked=picked.concat(L.filter(k=>!picked.includes(k)).slice(0,n-picked.length));
+    if(picked.length<n)picked=picked.concat(weightedAge(green.filter(k=>!picked.includes(k)),n-picked.length));
   }
   shuffle(picked);
   return{mode,queue:picked.map(k=>({key:k,flip:Math.random()<.5}))};
@@ -358,9 +364,9 @@ function mapHTML(){
       const k=keyOf(a,b),f=S.facts[k];
       let cls='cell',txt='?',st='沒遇過',style='';
       if(f.pre){cls+=' m';txt=a*b;st='本來就會';}
-      else if(f.box>=5&&f.n>0){cls+=' s';txt=a*b;st='大師';}
-      else if(f.box>=3&&f.n>0){cls+=' m';txt=a*b;st='熟了';}
-      else if(f.n>0){cls+=' l';txt='';st='練習中';style=` style="--fill:${[16,40,70][f.box]||16}%"`;}
+      else if(f.n>0&&f.st>=S.set.need*2){cls+=' s';txt=a*b;st='大師';}
+      else if(f.n>0&&f.st>=S.set.need){cls+=' m';txt=a*b;st='熟了';}
+      else if(f.n>0){cls+=' l';txt='';st='練習中';style=` style="--fill:${Math.min(85,16+Math.round(f.st/S.set.need*70))}%"`;}
       if(V.cell===k)cls+=' sel';
       h+=`<button class="${cls}"${style} data-act="cell" data-k="${k}" aria-label="${a} 乘 ${b}，${st}">${txt}${BOSSES.includes(k)?CROWN:''}</button>`;
     }
@@ -373,8 +379,8 @@ function cellInfo(){
   const boss=V.cell==='7x8'?'這是最終魔王！':BOSSES.includes(V.cell)?'這是頭目題。':'';
   if(f.pre)return `${t}：乘 1 本來就會，免練。`;
   if(f.n===0)return `${t}：還沒遇到，任務裡很快會出現。${boss}`;
-  if(isM(f))return `${t} = ${p.a*p.b}，熟了！練習 ${f.n} 次，最快 ${fmtSec(f.best)} 秒。${boss}`;
-  return `${t}：練習中。練了 ${f.n} 次，答對 ${f.ok} 次。${boss}`;
+  if(isM(f))return `${t} = ${p.a*p.b}，熟了！已連續 ${f.st} 次夠快，最快 ${fmtSec(f.best)} 秒。${boss}`;
+  return `${t}：練習中。連續夠快 ${f.st} / ${S.set.need} 次，練了 ${f.n} 次。${boss}`;
 }
 
 function homeHTML(){
@@ -393,7 +399,7 @@ function homeHTML(){
     btn='<button class="btn dark" data-act="start">再加練一輪</button>';
   }else{
     title=`今日任務：${S.set.per} 題`;
-    sub=`${S.set.fast} 秒內答對，這題就會在地圖上亮起來。`;
+    sub=`連續 ${S.set.need} 次都在 ${S.set.fast} 秒內答對，這題才會變綠。`;
     btn='<button class="btn dark" data-act="start">出發！</button>';
   }
   const now=new Date(),dow=(now.getDay()+6)%7,names=['一','二','三','四','五','六','日'];
@@ -458,7 +464,7 @@ function showQ(){
   Q.input='';Q.locked=false;
   $('#prob').textContent=`${d.a} × ${d.b} =`;
   const slot=$('#slot');slot.textContent='?';slot.className='slot num';
-  const fb=$('#fb');fb.className='fb';fb.textContent=`${S.set.fast} 秒內答對，這題就算熟了`;
+  const fb=$('#fb');fb.className='fb';fb.textContent=`${S.set.fast} 秒內答對，才算一次達標`;
   $('#progF').style.width=(Q.i/Q.queue.length*100)+'%';
   $('#pc').textContent=`第 ${Q.i+1} 題`;
   const bar=$('#bar');
@@ -488,22 +494,22 @@ function giveUp(){
   Q.locked=true;grade(Q.queue[Q.i],false,0,true);
 }
 function grade(q,ok,ms,idk){
-  const f=S.facts[q.key],thr=S.set.fast*1000,today=dayNum();
-  const rep=q.key in Q.first,wasM=isM(f),firstSight=f.n===0;
+  const f=S.facts[q.key],thr=S.set.fast*1000,today=dayNum(),need=S.set.need;
+  const rep=q.key in Q.first,wasM=isM(f);
   let out;
-  f.n++;
+  f.n++;f.last=today;
   if(ok){
     f.ok++;f.avg=f.avg?Math.round(f.avg*.6+ms*.4):ms;f.best=f.best?Math.min(f.best,ms):ms;
     if(ms<=thr){
       out='fast';f.fast++;
-      if(rep)f.box=Q.first[q.key]==='bad'?Math.max(f.box,1):Math.max(f.box,2);
-      else if(firstSight)f.box=3;
-      else f.box=Math.min(5,f.box+1);
+      /* 連續夠快：每題每天最多加一次，答錯後同一輪的重考不算 */
+      if(!rep&&f.sd!==today){f.st++;f.sd=today;}
     }else{
-      out='slow';f.box=f.box===0?1:Math.min(f.box,2);
+      out='slow';
+      if(!rep)f.st=wasM?Math.max(0,need-1):0;   /* 已經熟的題目太慢：退到差一次，沒熟的重新算；同一輪的重考不再重複扣 */
     }
-  }else{out='bad';f.bad++;f.box=0;}
-  f.due=today+INTERVALS[f.box];
+  }else{out='bad';f.bad++;f.st=0;}
+  f.due=today+(out==='bad'?0:isM(f)?3:1);
   if(!rep)Q.first[q.key]=out;
   if(!wasM&&isM(f)){if(!f.md)f.md=dayKey();if(!Q.mastered.includes(q.key))Q.mastered.push(q.key);}
   Q.answered++;if(out==='fast')Q.fastN++;
@@ -518,12 +524,12 @@ function grade(q,ok,ms,idk){
   save();
   const slot=$('#slot'),fb=$('#fb');
   if(out==='fast'){
-    const say=['熟了！','答得好快！','秒答！','這題穩了！'];
-    slot.classList.add('good');fb.classList.add('good');fb.textContent=say[Math.floor(Math.random()*say.length)];
+    slot.classList.add('good');fb.classList.add('good');
+    fb.textContent=(!wasM&&isM(f))?'熟了！地圖亮起來了':wasM?'還是這麼穩！':`夠快！連續 ${f.st} / ${need} 次`;
     sfx.fast();Q.tm=setTimeout(next,700);
   }else if(out==='slow'){
     slot.classList.add('ok');fb.classList.add('ok');
-    fb.textContent=`答對了！用了 ${fmtSec(ms)} 秒，再快一點就熟了`;
+    fb.textContent=`答對了！用了 ${fmtSec(ms)} 秒，要在 ${S.set.fast} 秒內才算達標`;
     sfx.ok();Q.tm=setTimeout(next,1300);
   }else{
     slot.classList.add('try');showSheet(q,idk);
@@ -631,14 +637,15 @@ function parentHTML(){
     ?`<div class="confirm"><p><b>現在兌換 ${t[0]} 分鐘的遊戲時間？</b></p><div class="row2"><button class="btn primary" data-act="useyes">確定兌換</button><button class="btn" data-act="useno">取消</button></div></div>`
     :`<button class="btn primary" data-act="use">使用一張（${t[0]} 分鐘）</button>`;
   const log=S.log.length?`<ul class="log">${S.log.slice(0,6).map(x=>`<li><span>${esc(x.d)} ${esc(x.t)}</span><span>兌換 ${esc(x.m)} 分鐘</span></li>`).join('')}</ul>`:'<p class="muted">還沒有兌換紀錄。</p>';
-  const weak=Object.keys(S.facts).filter(k=>{const f=S.facts[k];return !f.pre&&f.n>0&&f.box<3;})
+  const weak=Object.keys(S.facts).filter(k=>{const f=S.facts[k];return !f.pre&&f.n>0&&!isM(f);})
     .sort((x,y)=>S.facts[y].bad-S.facts[x].bad||S.facts[y].avg-S.facts[x].avg).slice(0,8);
   const weakHTML=weak.length
-    ?`<table class="tbl"><thead><tr><th>題目</th><th>練習</th><th>答錯</th><th>平均</th></tr></thead><tbody>${weak.map(k=>{const f=S.facts[k],p=parse(k);return`<tr><td class="num">${p.a} × ${p.b}</td><td>${f.n} 次</td><td>${f.bad} 次</td><td>${f.avg?fmtSec(f.avg)+' 秒':'—'}</td></tr>`;}).join('')}</tbody></table>`
+    ?`<table class="tbl"><thead><tr><th>題目</th><th>練習</th><th>答錯</th><th>平均</th><th>連續達標</th></tr></thead><tbody>${weak.map(k=>{const f=S.facts[k],p=parse(k);return`<tr><td class="num">${p.a} × ${p.b}</td><td>${f.n} 次</td><td>${f.bad} 次</td><td>${f.avg?fmtSec(f.avg)+' 秒':'—'}</td><td>${f.st} / ${S.set.need}</td></tr>`;}).join('')}</tbody></table>`
     :`<p class="muted">${S.placed?'目前沒有還在練習中的題目。':'還沒有練習紀錄，先完成一次實力測驗吧。'}</p>`;
   const bossHTML=`<ul class="bosses">${BOSSES.map(k=>{const f=S.facts[k],p=parse(k);const st=isM(f)&&f.n>0?`已擊敗${f.md?'（'+esc(f.md)+'）':''}`:'還沒擊敗';return`<li><span class="num">${p.a} × ${p.b}${k==='7x8'?'　最終魔王':''}</span><span class="${isM(f)&&f.n>0?'':'muted'}">${st}</span></li>`;}).join('')}</ul>`;
   const settings=
-    seg('「夠快」的標準','fast',[2,3,4,5],v=>v+' 秒','答對而且在這個秒數內，才算熟。剛開始可以放寬一點。')+
+    seg('「夠快」的標準','fast',[2,3,4,5],v=>v+' 秒','答對而且在這個秒數內，才算一次達標。剛開始可以放寬一點。')+
+    seg('連續幾次達標才算熟','need',[3,4,5],v=>v+' 次','連續這麼多次都夠快，格子才會變綠。答錯或太慢就重新算；每題每天最多加一次。')+
     seg('每次幾題','per',[10,12,15],v=>v+' 題','下一次任務開始生效。')+
     seg('加練印章的答對率','acc',[70,80,90,100],v=>v+'%','加練一輪要達到這個比例才算數，只看每題第一次作答。')+
     seg('幾個印章換一張券','pips',[2,3,4,5],v=>v+' 個')+
